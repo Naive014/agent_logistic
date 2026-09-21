@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shipment-forecast-agent"
+version = "0.1.0"
+description = "Mail workflow: inbound directions Excel -> forecast JSON -> result Excel"
+requires-python = ">=3.11"
+dependencies = [
+  "openpyxl==3.1.5",
+  "pydantic==2.11.10",
+  "pydantic-settings==2.10.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff==0.16.8"]
+
+[project.scripts]
+shipment-forecast-agent = "shipment_forecast_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

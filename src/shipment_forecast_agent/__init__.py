@@ -1,0 +1,1 @@
+"""Shipment forecast mail agent."""

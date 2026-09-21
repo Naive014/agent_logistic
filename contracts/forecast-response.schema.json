@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forecast-response.schema.json",
+  "title": "Shipment forecast response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "generated_at", "forecasts"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "request_id": { "type": "string", "format": "uuid" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "forecasts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["direction_id", "shipping_point", "delivery_region", "period", "forecast", "attributes"],
+        "properties": {
+          "direction_id": { "type": "string", "minLength": 1 },
+          "shipping_point": { "type": "string", "minLength": 1 },
+          "delivery_region": { "type": "string", "minLength": 1 },
+          "period": { "type": "string", "format": "date" },
+          "forecast": { "type": "number", "minimum": 0 },
+          "attributes": { "type": "object" }
+        }
+      }
+    }
+  }
+}
+
