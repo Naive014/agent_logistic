@@ -22,7 +22,7 @@ from .models import ForecastRequest, ForecastResponse
 logger = logging.getLogger(__name__)
 
 
-def _send_now(settings: Settings, message: EmailMessage) -> None:
+def _send_now(settings: Settings, message: EmailMessage) -> str:
     """Submit directly to SMTP, independent of The Bat! and its outbox."""
     if not message.get("Message-ID"):
         message["Message-ID"] = make_msgid()
@@ -32,6 +32,7 @@ def _send_now(settings: Settings, message: EmailMessage) -> None:
         if refused:
             raise smtplib.SMTPRecipientsRefused(refused)
         logger.info("SMTP accepted message %s", message["Message-ID"])
+        return str(message["Message-ID"])
     finally:
         # A QUIT failure after acceptance must not prompt a duplicate send.
         try:
@@ -54,6 +55,8 @@ class ImapInputEnvelope:
     filename: str
     content: bytes
     uidvalidity: str = ""
+    original_filename: str = ""
+    received_at: str = ""
 
 
 def check_connections(settings: Settings) -> dict[str, str]:
@@ -216,13 +219,21 @@ def _iter_messages(settings: Settings, prefix: str):
         if status != "OK":
             raise RuntimeError("IMAP search failed")
         for uid in (data[0] or b"").split():
-            status, raw = client.uid("fetch", uid, "(BODY.PEEK[])")
+            status, raw = client.uid("fetch", uid, "(INTERNALDATE BODY.PEEK[])")
             if status != "OK":
                 raise RuntimeError("IMAP fetch failed")
             payload = next((item[1] for item in raw if isinstance(item, tuple)), None)
             if payload is None:
                 raise RuntimeError("IMAP response contains no message body")
             message = BytesParser(policy=policy.default).parsebytes(payload)
+            # Never trust a timestamp header supplied by the external sender.
+            del message["X-Agent-Received-At"]
+            metadata = next((item[0] for item in raw if isinstance(item, tuple)), b"")
+            internal = imaplib.Internaldate2tuple(metadata)
+            if internal:
+                message["X-Agent-Received-At"] = datetime.fromtimestamp(
+                    time.mktime(internal), UTC
+                ).isoformat()
             if str(message.get("Subject", "")).startswith(prefix):
                 yield uid, uidvalidity, message
 
@@ -275,6 +286,8 @@ def iter_input_workbooks(settings: Settings) -> Iterable[ImapInputEnvelope]:
                 "input-" + hashlib.sha256(filename.encode()).hexdigest()[:16] + ".xlsx",
                 content,
                 validity,
+                filename,
+                str(message.get("X-Agent-Received-At", "")),
             )
 
 
@@ -319,7 +332,7 @@ def send_result_workbook(
     recipient: str,
     request_id: str,
     workbook_path: str | Path,
-) -> None:
+) -> str:
     message = EmailMessage()
     message["From"] = settings.MAILBOX_NAME
     message["To"] = recipient
@@ -333,4 +346,4 @@ def send_result_workbook(
         subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=path.name,
     )
-    _send_now(settings, message)
+    return _send_now(settings, message)

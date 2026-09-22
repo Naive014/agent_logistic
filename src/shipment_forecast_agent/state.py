@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Callable
@@ -26,7 +27,7 @@ def write_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def submit_once(path: Path, operation: Callable[[], None]) -> bool:
+def submit_once(path: Path, operation: Callable[[], str | None]) -> bool:
     """Claim before sending; return False for a previously accepted submission.
 
     Exclusive creation protects concurrent runs. A crash or transport failure leaves
@@ -48,6 +49,13 @@ def submit_once(path: Path, operation: Callable[[], None]) -> bool:
         raise UncertainSubmission(
             f"Check SMTP logs before retrying submission: {path}"
         ) from None
-    operation()
-    write_json(path, {"status": "smtp_accepted"})
+    message_id = operation()
+    write_json(
+        path,
+        {
+            "status": "smtp_accepted",
+            "accepted_at": datetime.now(UTC).isoformat(),
+            "message_id": message_id if isinstance(message_id, str) else "",
+        },
+    )
     return True

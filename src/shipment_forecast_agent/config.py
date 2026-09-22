@@ -23,12 +23,18 @@ class Settings(BaseSettings):
     SMTP_USE_SSL: bool = True
     SMTP_USE_STARTTLS: bool = False
     MAIL_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
+    POLL_INTERVAL_SECONDS: int = Field(default=30, ge=1)
+    FORECAST_START_MONTH: str = ""
+    FORECAST_HORIZON_MONTHS: int = Field(default=3, ge=1, le=36)
+    EXCEL_SHEET: str = ""
+    EXCEL_HEADER_ROW: int = Field(default=1, ge=1)
+    RESULT_MAILBOX: str = ""
     N8N_RESPONSE_SENDER: str = ""
     INTERNAL_OUTLOOK_EMAIL: str = ""
     SEND_RESULTS_TO_REQUESTER: bool = False
     INPUT_SUBJECT_PREFIX: str = "[FORECAST_INPUT]"
-    N8N_REQUEST_SUBJECT_PREFIX: str = "[FORECAST_REQUEST]"
-    N8N_RESPONSE_SUBJECT_PREFIX: str = "[FORECAST_RESPONSE]"
+    N8N_REQUEST_SUBJECT_PREFIX: str = "[N8N_FORECAST_REQUEST]"
+    N8N_RESPONSE_SUBJECT_PREFIX: str = "[N8N_FORECAST_RESULT]"
     TRUSTED_REQUESTERS: Annotated[tuple[str, ...], NoDecode] = ()
 
     def input_mailbox(self) -> "Settings":
