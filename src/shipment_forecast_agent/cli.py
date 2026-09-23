@@ -111,6 +111,7 @@ def main() -> None:
             result = check_connections(mailbox)
             print(
                 f"{label} ({mailbox.MAILBOX_NAME}): IMAP: {result['imap']}; SMTP: {result['smtp']}; authentication only, not delivery"
+                f"; Sent copy: {result['sent_copy']}"
             )
     elif args.command == "self-test-mail":
         result = run_self_test(get_settings())

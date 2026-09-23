@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     SMTP_PORT: int = Field(default=465, ge=1, le=65535)
     SMTP_USE_SSL: bool = True
     SMTP_USE_STARTTLS: bool = False
+    SAVE_SENT_COPY: bool = True
+    IMAP_SENT_FOLDER: str = ""
     MAIL_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
     POLL_INTERVAL_SECONDS: int = Field(default=30, ge=1)
     FORECAST_START_MONTH: str = ""

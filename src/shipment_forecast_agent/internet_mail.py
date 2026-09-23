@@ -2,6 +2,7 @@ import hashlib
 import imaplib
 import json
 import logging
+import re
 import smtplib
 import ssl
 import time
@@ -20,6 +21,62 @@ from .config import Settings
 from .models import ForecastRequest, ForecastResponse
 
 logger = logging.getLogger(__name__)
+LIST_RESPONSE = re.compile(
+    rb'^\((?P<flags>[^)]*)\)\s+(?:NIL|"(?:\\.|[^"])*")\s+(?P<mailbox>.+)$'
+)
+
+
+def _configured_mailbox(value: str) -> bytes:
+    if not value or any(character in value for character in "\r\n"):
+        raise ValueError("IMAP_SENT_FOLDER must be a nonempty mailbox name")
+    encoded = value.encode("ascii")
+    return b'"' + encoded.replace(b"\\", b"\\\\").replace(b'"', b'\\"') + b'"'
+
+
+def _sent_mailbox(client, configured: str = ""):
+    """Return the raw IMAP mailbox token advertised as the Sent folder."""
+    if configured:
+        return _configured_mailbox(configured)
+    status, entries = client.list()
+    if status != "OK":
+        raise RuntimeError("Could not list IMAP mailboxes")
+    parsed = []
+    for entry in entries or []:
+        if not isinstance(entry, bytes):
+            continue
+        match = LIST_RESPONSE.match(entry)
+        if not match:
+            continue
+        flags = {flag.lower() for flag in match.group("flags").split()}
+        mailbox = match.group("mailbox").strip()
+        if b"\\sent" in flags:
+            return mailbox
+        parsed.append(mailbox)
+    for mailbox in parsed:
+        plain = mailbox.strip(b'"').lower()
+        if plain in {b"sent", b"sent items", b"sent messages", b"inbox.sent"}:
+            return mailbox
+    raise RuntimeError(
+        "IMAP server did not advertise a Sent folder; set IMAP_SENT_FOLDER"
+    )
+
+
+def _append_sent_copy(settings: Settings, message: EmailMessage) -> None:
+    client = _open_imap(settings)
+    try:
+        mailbox = _sent_mailbox(client, settings.IMAP_SENT_FOLDER)
+        status, data = client.append(
+            mailbox,
+            r"(\Seen)",
+            imaplib.Time2Internaldate(time.time()),
+            message.as_bytes(policy=policy.SMTP),
+        )
+        if status != "OK":
+            raise RuntimeError(f"IMAP APPEND to Sent failed: {data!r}")
+        logger.info("Saved sent copy %s to IMAP", message["Message-ID"])
+    finally:
+        with suppress(OSError, imaplib.IMAP4.error):
+            client.logout()
 
 
 def _send_now(settings: Settings, message: EmailMessage) -> str:
@@ -32,13 +89,23 @@ def _send_now(settings: Settings, message: EmailMessage) -> str:
         if refused:
             raise smtplib.SMTPRecipientsRefused(refused)
         logger.info("SMTP accepted message %s", message["Message-ID"])
-        return str(message["Message-ID"])
     finally:
         # A QUIT failure after acceptance must not prompt a duplicate send.
         try:
             client.quit()
         except (OSError, smtplib.SMTPException):
             client.close()
+    if settings.SAVE_SENT_COPY:
+        try:
+            _append_sent_copy(settings, message)
+        except Exception:
+            # SMTP already accepted the message. Never turn a Sent-copy failure
+            # into a retry that could send the recipient a duplicate.
+            logger.exception(
+                "Message %s was sent, but its IMAP Sent copy could not be saved",
+                message["Message-ID"],
+            )
+    return str(message["Message-ID"])
 
 
 @dataclass(frozen=True)
@@ -64,6 +131,12 @@ def check_connections(settings: Settings) -> dict[str, str]:
     imap = _open_imap(settings)
     try:
         imap.noop()
+        sent_copy = (
+            "available"
+            if settings.SAVE_SENT_COPY
+            and _sent_mailbox(imap, settings.IMAP_SENT_FOLDER)
+            else "disabled"
+        )
     finally:
         imap.logout()
 
@@ -72,7 +145,7 @@ def check_connections(settings: Settings) -> dict[str, str]:
         smtp.noop()
     finally:
         smtp.quit()
-    return {"imap": "ok", "smtp": "ok"}
+    return {"imap": "ok", "smtp": "ok", "sent_copy": sent_copy}
 
 
 def run_self_test(settings: Settings, timeout_seconds: int = 30) -> dict[str, str]:
