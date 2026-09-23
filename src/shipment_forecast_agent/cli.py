@@ -20,11 +20,24 @@ def main() -> None:
         "run-agents", help="Run both mail agents continuously; Ctrl+C stops both"
     )
     for name in ("request-agent", "result-agent"):
-        agent = subparsers.add_parser(
-            name, help="Continuously process mail; Ctrl+C to stop"
+        purpose = (
+            "prepare one incoming Excel request"
+            if name == "request-agent"
+            else "send one queued JSON or finish one response"
         )
-        agent.add_argument(
-            "--once", action="store_true", help="Run a single polling cycle"
+        agent = subparsers.add_parser(
+            name, help=f"Run once to {purpose}; use --continuous to keep polling"
+        )
+        mode = agent.add_mutually_exclusive_group()
+        mode.add_argument(
+            "--continuous",
+            action="store_true",
+            help="Keep polling until Ctrl+C instead of exiting after one cycle",
+        )
+        mode.add_argument(
+            "--once",
+            action="store_true",
+            help=argparse.SUPPRESS,
         )
 
     prepare = subparsers.add_parser(
@@ -41,11 +54,11 @@ def main() -> None:
 
     subparsers.add_parser(
         "process-inbox",
-        help="Read input XLSX mail from LogRocket and forward JSON to Outlook",
+        help="Read one input email and queue its XLSX as JSON",
     )
 
     subparsers.add_parser(
-        "receive", help="Read n8n responses from LogRocket and create Excel results"
+        "receive", help="Send one queued JSON or finish one n8n response"
     )
 
     subparsers.add_parser(
@@ -71,7 +84,7 @@ def main() -> None:
             run_agent(
                 get_settings(),
                 "requests" if args.command == "request-agent" else "results",
-                args.once,
+                once=not args.continuous,
             )
         except KeyboardInterrupt:
             print("Agent stopped")

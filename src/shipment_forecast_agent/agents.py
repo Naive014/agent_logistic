@@ -19,7 +19,7 @@ from .internet_mail import (
 from .logging_setup import configure_agent_logging
 from .registry import Registry, locked
 from .state import submit_once, write_json
-from .template_excel import current_month, fill_forecasts, request_data, validate_tender
+from .template_excel import fill_forecasts, request_data
 
 logger = logging.getLogger(__name__)
 UID_PATTERN = r"RQ-[a-f0-9]{32}"
@@ -32,7 +32,14 @@ def process_requests(settings):
     incoming = settings.input_mailbox()
     processed, failed, acknowledged = [], set(), set()
     with locked(settings.WORK_DIR / "request-agent.lock"):
+        selected_uid = None
         for item in iter_input_workbooks(incoming):
+            # One invocation consumes exactly one source email. All XLSX
+            # attachments of that email belong to the same atomic input unit.
+            if selected_uid is None:
+                selected_uid = item.uid
+            elif item.uid != selected_uid:
+                break
             try:
                 identity = "\0".join(
                     [
@@ -48,24 +55,14 @@ def process_requests(settings):
                 directory.mkdir(parents=True, exist_ok=True)
                 source = directory / "source.xlsx"
                 record = registry.get(key)
-                if record and record["status"] in ("sent", "completed"):
+                if record and record["status"] in ("prepared", "sent", "completed"):
                     acknowledged.add(item.uid)
                     continue
                 if not source.exists():
                     source.write_bytes(item.content)
                 payload_path = directory / "request.json"
-                if payload_path.exists():
-                    payload = json.loads(payload_path.read_text(encoding="utf-8"))
-                    if not (directory / "request-submission.json").exists():
-                        validate_tender(source, settings)
-                        payload.pop("uid", None)
-                        payload["request_id"] = key
-                        payload.setdefault("ppr_month", current_month())
-                        payload["mail_id"] = key
-                        write_json(payload_path, payload)
-                else:
-                    payload = request_data(source, settings, key)
-                    write_json(payload_path, payload)
+                payload = request_data(source, settings, key)
+                write_json(payload_path, payload)
                 registry.put(
                     {
                         "request_id": key,
@@ -80,39 +77,7 @@ def process_requests(settings):
                         or item.received_at,
                     }
                 )
-                if not settings.INTERNAL_OUTLOOK_EMAIL:
-                    raise ValueError("INTERNAL_OUTLOOK_EMAIL is required")
-
-                def send():
-                    message = EmailMessage()
-                    message["From"] = settings.MAILBOX_NAME
-                    message["To"] = settings.INTERNAL_OUTLOOK_EMAIL
-                    message["Reply-To"] = settings.MAILBOX_NAME
-                    message["Subject"] = f"{settings.N8N_REQUEST_SUBJECT_PREFIX} {key}"
-                    message["Date"] = format_datetime(datetime.now(UTC))
-                    message.set_content(
-                        f"Запрос прогноза. Верните mail_id {key} в JSON ответа."
-                    )
-                    message.add_attachment(
-                        json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                        maintype="application",
-                        subtype="json",
-                        filename="forecast_request.json",
-                    )
-                    return _send_now(settings, message)
-
-                submit_once(directory / "request-submission.json", send)
-                receipt = json.loads(
-                    (directory / "request-submission.json").read_text(encoding="utf-8")
-                )
-                registry.put(
-                    {
-                        "request_id": key,
-                        "status": "sent",
-                        "outlook_sent_at": receipt.get("accepted_at", ""),
-                    }
-                )
-                logger.info("Request %s accepted by SMTP", key)
+                logger.info("Request %s prepared and queued", key)
                 acknowledged.add(item.uid)
                 processed.append(key)
             except Exception:
@@ -123,6 +88,49 @@ def process_requests(settings):
         for uid in acknowledged - failed:
             mark_processed(incoming, uid)
     return processed
+
+
+def _send_prepared_request(settings, registry, record):
+    """Send one prepared JSON and atomically advance its queue state."""
+    if not settings.INTERNAL_OUTLOOK_EMAIL:
+        raise ValueError("INTERNAL_OUTLOOK_EMAIL is required")
+    key = record["request_id"]
+    if not re.fullmatch(UID_PATTERN, key):
+        raise ValueError("Invalid queued request ID")
+    directory = settings.WORK_DIR / "jobs" / key
+    payload_path = directory / "request.json"
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    if payload.get("mail_id") != key:
+        raise ValueError("Queued JSON mail_id does not match CSV request_id")
+
+    def send():
+        message = EmailMessage()
+        message["From"] = settings.MAILBOX_NAME
+        message["To"] = settings.INTERNAL_OUTLOOK_EMAIL
+        message["Reply-To"] = settings.MAILBOX_NAME
+        message["Subject"] = f"{settings.N8N_REQUEST_SUBJECT_PREFIX} {key}"
+        message["Date"] = format_datetime(datetime.now(UTC))
+        message.set_content(f"Запрос прогноза. Верните mail_id {key} в JSON ответа.")
+        message.add_attachment(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            maintype="application",
+            subtype="json",
+            filename="forecast_request.json",
+        )
+        return _send_now(settings, message)
+
+    submission = directory / "request-submission.json"
+    submit_once(submission, send)
+    receipt = json.loads(submission.read_text(encoding="utf-8"))
+    registry.put(
+        {
+            "request_id": key,
+            "status": "sent",
+            "outlook_sent_at": receipt.get("accepted_at", ""),
+        }
+    )
+    logger.info("Queued request %s accepted by SMTP", key)
+    return key
 
 
 def correlate(subject, payload):
@@ -160,7 +168,7 @@ def forecast_rows(payload):
         if "row_count" in payload and payload["row_count"] != len(result):
             raise ValueError("row_count does not match data")
     else:
-        raise ValueError("Invalid JSON shape")
+        raise TypeError("Invalid JSON shape")
     if (
         not isinstance(result, list)
         or not result
@@ -170,9 +178,24 @@ def forecast_rows(payload):
     return result
 
 
+def _handled_response_messages(path):
+    if not path.exists():
+        return set()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    values = payload.get("handled", [])
+    if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+        raise ValueError("Invalid result mail ledger")
+    return set(values)
+
+
+def _remember_response(path, handled, token):
+    handled.add(token)
+    write_json(path, {"handled": sorted(handled)})
+
+
 def process_results(settings):
     configure_agent_logging(settings, "result")
-    logger.info("Starting result polling cycle")
+    logger.info("Starting delivery/result polling cycle")
     registry = Registry(settings.WORK_DIR)
     outputs = []
     sender = (
@@ -181,14 +204,20 @@ def process_results(settings):
         .strip()
     )
     result_settings = settings.input_mailbox()
+    handled_path = settings.WORK_DIR / "result-mail-handled.json"
     if not sender:
         raise ValueError("Response sender is required")
     with locked(settings.WORK_DIR / "result-agent.lock"):
-        for uid, _, message in _iter_messages(
-            settings, settings.N8N_RESPONSE_SUBJECT_PREFIX
+        handled = _handled_response_messages(handled_path)
+        for uid, uidvalidity, message in _iter_messages(
+            settings, None, unseen_only=False
         ):
+            token = f"{uidvalidity}:{uid.decode()}"
+            if token in handled:
+                continue
             if parseaddr(str(message.get("From", "")))[1].lower() != sender:
                 logger.warning("Ignoring unexpected sender, UID %s", uid.decode())
+                _remember_response(handled_path, handled, token)
                 continue
             try:
                 attachments = [
@@ -218,9 +247,12 @@ def process_results(settings):
                     )
                 if record["status"] == "completed":
                     mark_processed(settings, uid)
+                    _remember_response(handled_path, handled, token)
                     continue
                 if record["status"] != "sent":
-                    raise ValueError("Request submission is not yet confirmed")
+                    # This can be a response that raced ahead of the local CSV
+                    # transition. Keep it retryable instead of blacklisting it.
+                    raise RuntimeError("Request submission is not yet confirmed")
                 recipient = record.get("sender", "").strip()
                 if not re.fullmatch(r"[^\s@,;<>]+@[^\s@,;<>]+", recipient):
                     raise ValueError(
@@ -248,8 +280,10 @@ def process_results(settings):
                     write_json(directory / "response.json", {"payload": payload})
                     submit_once(
                         submission,
-                        lambda: send_result_workbook(
-                            result_settings, recipient, key, output
+                        lambda recipient=recipient, key=key, output=output: (
+                            send_result_workbook(
+                                result_settings, recipient, key, output
+                            )
                         ),
                     )
                 else:
@@ -274,10 +308,27 @@ def process_results(settings):
                 )
                 mark_processed(settings, uid)
                 outputs.append(output)
-            except Exception:
+                _remember_response(handled_path, handled, token)
+                # The second agent completes at most one queue item per cycle.
+                return outputs
+            except (ValueError, KeyError, TypeError):
                 logger.exception(
                     "Response processing failed for mail UID %s", uid.decode()
                 )
+                # Email content is immutable. A corrected n8n response will have a
+                # new IMAP UID, so do not log the same terminal validation error
+                # every polling cycle.
+                _remember_response(handled_path, handled, token)
+            except Exception:
+                # Transport, filesystem and uncertain SMTP errors remain retryable.
+                logger.exception(
+                    "Response processing failed for mail UID %s; will retry",
+                    uid.decode(),
+                )
+        # No actionable response was completed: submit one prepared request.
+        record = registry.first_with_status("prepared")
+        if record:
+            outputs.append(_send_prepared_request(settings, registry, record))
     return outputs
 
 

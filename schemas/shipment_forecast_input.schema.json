@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "shipment-forecast-input.schema.json",
+  "title": "Shipment Forecast Input",
+  "description": "Input JSON attached to the incoming email.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mail_id",
+    "param_month_m0",
+    "shipment_point_name",
+    "delivery_point_name"
+  ],
+  "properties": {
+    "mail_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Correlation ID. The same value is returned in the output JSON."
+    },
+    "param_month_m0": {
+      "type": "string",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])$",
+      "description": "Base forecast month in YYYY-MM format."
+    },
+    "shipment_point_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "PPR shipment point name."
+    },
+    "delivery_point_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "PPR delivery point name."
+    }
+  }
+}

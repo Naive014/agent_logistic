@@ -73,6 +73,11 @@ class Registry:
                 (r for r in self._read() if r["request_id"] == request_id), None
             )
 
+    def first_with_status(self, status):
+        """Return the oldest queue record with the requested status."""
+        with locked(self.path.with_suffix(".lock")):
+            return next((dict(r) for r in self._read() if r["status"] == status), None)
+
     def put(self, record):
         with locked(self.path.with_suffix(".lock")):
             records = self._read()

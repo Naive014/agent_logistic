@@ -5,6 +5,7 @@ import logging
 import smtplib
 import ssl
 import time
+from collections.abc import Iterable
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,7 +14,6 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import format_datetime, make_msgid, parseaddr
 from pathlib import Path
-from typing import Iterable
 from uuid import uuid4
 
 from .config import Settings
@@ -204,9 +204,11 @@ def _inbox(settings: Settings, *, readonly: bool = True):
             client.logout()
 
 
-def _iter_messages(settings: Settings, prefix: str):
-    """Read without changing Seen; acknowledge separately after processing."""
-    if not prefix or any(c in prefix for c in '\r\n"\\') or not prefix.isascii():
+def _iter_messages(settings: Settings, prefix: str | None, *, unseen_only: bool = True):
+    """Read unseen mail without changing Seen; optionally restrict by subject."""
+    if prefix is not None and (
+        not prefix or any(c in prefix for c in '\r\n"\\') or not prefix.isascii()
+    ):
         raise ValueError(
             "Subject prefix must be nonempty ASCII without quotes or backslashes"
         )
@@ -215,7 +217,10 @@ def _iter_messages(settings: Settings, prefix: str):
         if not validity or not validity[0]:
             raise RuntimeError("Server did not return UIDVALIDITY")
         uidvalidity = validity[0].decode("ascii")
-        status, data = client.uid("search", None, "UNSEEN", "SUBJECT", f'"{prefix}"')
+        criteria = ["UNSEEN"] if unseen_only else ["ALL"]
+        if prefix is not None:
+            criteria += ["SUBJECT", f'"{prefix}"']
+        status, data = client.uid("search", None, *criteria)
         if status != "OK":
             raise RuntimeError("IMAP search failed")
         for uid in (data[0] or b"").split():
@@ -234,7 +239,7 @@ def _iter_messages(settings: Settings, prefix: str):
                 message["X-Agent-Received-At"] = datetime.fromtimestamp(
                     time.mktime(internal), UTC
                 ).isoformat()
-            if str(message.get("Subject", "")).startswith(prefix):
+            if prefix is None or str(message.get("Subject", "")).startswith(prefix):
                 yield uid, uidvalidity, message
 
 

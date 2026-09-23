@@ -32,6 +32,12 @@ REQUIRED_TENDER_HEADERS = (
     "Гарантированные объемы, единиц ТС\\месяц",
 )
 
+FORECAST_COLUMNS = (
+    ("forecast_m1", "Прогноз M1"),
+    ("forecast_m2", "Прогноз M2"),
+    ("forecast_m3", "Прогноз M3"),
+)
+
 
 def normalized(value):
     return " ".join(str(value or "").split()).casefold()
@@ -39,7 +45,7 @@ def normalized(value):
 
 def current_month():
     """Calendar month on the machine running the agent, frozen in request.json."""
-    return date.today().strftime("%Y-%m")
+    return date.today().strftime("%Y-%m")  # noqa: DTZ011 - local business month
 
 
 def validate_tender_headers(book, settings):
@@ -50,7 +56,10 @@ def validate_tender_headers(book, settings):
     for label in REQUIRED_TENDER_HEADERS:
         aliases = {normalized(label)}
         if label == "Наименование пункта отгрузки":
-            aliases |= SHIPPING_POINT_ALIASES | {"shipment_point_name", "пункт выгрузки"}
+            aliases |= SHIPPING_POINT_ALIASES | {
+                "shipment_point_name",
+                "пункт выгрузки",
+            }
         elif label == "Наименование региона доставки":
             aliases |= DELIVERY_REGION_ALIASES | {"delivery_point_name"}
         count = sum(h in aliases for h in headers)
@@ -113,14 +122,17 @@ def request_data(path, settings, request_id):
         validate_tender_headers(book, settings)
         _, source = rows(book, settings)
         directions = list(dict.fromkeys((r[1], r[2]) for r in source))
+        if len(directions) != 1:
+            raise ValueError(
+                "Input JSON schema supports exactly one unique direction; "
+                f"found {len(directions)}"
+            )
+        point, region = directions[0]
         return {
             "mail_id": request_id,
-            "request_id": request_id,
-            "ppr_month": current_month(),
-            "directions": [
-                {"shipment_point_name": p, "delivery_point_name": r}
-                for p, r in directions
-            ],
+            "param_month_m0": current_month(),
+            "shipment_point_name": point,
+            "delivery_point_name": region,
         }
     finally:
         book.close()
@@ -134,17 +146,26 @@ def fill_forecasts(source, output, forecasts, settings):
         for item in forecasts:
             p = item.get("shipment_point_name", item.get("shipping_point"))
             r = item.get("delivery_point_name", item.get("delivery_region"))
-            if not p or not r or isinstance(item.get("forecast"), bool):
-                raise ValueError("Missing forecast direction or invalid forecast")
-            value = float(item["forecast"])
-            if not math.isfinite(value) or value < 0:
-                raise ValueError("Forecast must be finite and nonnegative")
+            if not p or not r:
+                raise ValueError("Missing forecast direction")
+            values = []
+            for field, _ in FORECAST_COLUMNS:
+                raw_forecast = item.get(field)
+                if isinstance(raw_forecast, bool) or raw_forecast is None:
+                    raise ValueError(f"Missing or invalid {field}")
+                try:
+                    value = float(raw_forecast)
+                except (TypeError, ValueError):
+                    raise ValueError(f"Missing or invalid {field}") from None
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError(f"{field} must be finite and nonnegative")
+                values.append(value)
             key = normalized(p), normalized(r)
             if key in predictions:
                 raise ValueError(
                     "Multiple forecasts for one direction; ambiguous response"
                 )
-            predictions[key] = value
+            predictions[key] = tuple(values)
         values, used = [], set()
         for index, p, r in source_rows:
             key = normalized(p), normalized(r)
@@ -154,18 +175,29 @@ def fill_forecasts(source, output, forecasts, settings):
             used.add(key)
         if used != set(predictions):
             raise ValueError("Response contains directions absent from Excel")
-        if any(
-            normalized(c.value) == "прогноз" for c in sheet[settings.EXCEL_HEADER_ROW]
-        ):
+        existing_headers = {
+            normalized(c.value) for c in sheet[settings.EXCEL_HEADER_ROW] if c.value
+        }
+        result_headers = {normalized(label) for _, label in FORECAST_COLUMNS}
+        if "прогноз" in existing_headers or existing_headers & result_headers:
             raise ValueError(
-                "Source already contains a forecast column; refusing overwrite"
+                "Source already contains forecast columns; refusing overwrite"
             )
-        column = sheet.max_column + 1
-        for index, value in [(settings.EXCEL_HEADER_ROW, "Прогноз"), *values]:
-            target = sheet.cell(index, column, value)
-            target._style = copy(sheet.cell(index, column - 1)._style)
-            if index != settings.EXCEL_HEADER_ROW:
-                target.number_format = "0.00"
+        first_column = sheet.max_column + 1
+        style_column = first_column - 1
+        for offset, (_, header) in enumerate(FORECAST_COLUMNS):
+            column = first_column + offset
+            column_values = [
+                (index, forecast_values[offset]) for index, forecast_values in values
+            ]
+            for index, value in [
+                (settings.EXCEL_HEADER_ROW, header),
+                *column_values,
+            ]:
+                target = sheet.cell(index, column, value)
+                target._style = copy(sheet.cell(index, style_column)._style)
+                if index != settings.EXCEL_HEADER_ROW:
+                    target.number_format = "0.00"
         output.parent.mkdir(parents=True, exist_ok=True)
         book.save(output)
         return output

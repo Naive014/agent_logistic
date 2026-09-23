@@ -95,7 +95,7 @@ def process_input_messages(settings: Settings) -> list[ForecastRequest]:
             write_json(request_path, request.model_dump(mode="json"))
         if submit_once(
             request_dir / "submission.json",
-            lambda: send_forecast_request(settings, request),
+            lambda request=request: send_forecast_request(settings, request),
         ):
             requests.append(request)
         processed_uids.add(envelope.uid)
@@ -159,11 +159,13 @@ def receive_responses(settings: Settings) -> list[Path]:
         if settings.SEND_RESULTS_TO_REQUESTER and request.reply_to:
             submit_once(
                 result_submission,
-                lambda: send_result_workbook(
-                    result_settings,
-                    request.reply_to,
-                    str(envelope.response.request_id),
-                    output_path,
+                lambda request=request, envelope=envelope, output_path=output_path: (
+                    send_result_workbook(
+                        result_settings,
+                        request.reply_to,
+                        str(envelope.response.request_id),
+                        output_path,
+                    )
                 ),
             )
         mark_processed(settings, envelope.uid)

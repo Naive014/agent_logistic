@@ -35,9 +35,8 @@ def test_order_case_whitespace_extra_columns_and_empty_optional_values(tmp_path)
     headers = ["  " + h.upper() + "\n" for h in reversed(REQUIRED_TENDER_HEADERS)]
     save_template(source, headers + ["Дополнительный столбец"])
     payload = request_data(source, Settings(_env_file=None), "test")
-    assert payload["directions"] == [
-        {"shipment_point_name": "Завод", "delivery_point_name": "Область"}
-    ]
+    assert payload["shipment_point_name"] == "Завод"
+    assert payload["delivery_point_name"] == "Область"
 
 
 @pytest.mark.parametrize("duplicate", ["Валюта", "Наименование пункта отгрузки"])
@@ -52,8 +51,12 @@ def test_invalid_template_not_sent_or_marked_read(monkeypatch, tmp_path, caplog)
     source = tmp_path / "input.xlsx"
     save_template(source, list(REQUIRED_TENDER_HEADERS[:-1]))
     item = ImapInputEnvelope(
-        b"1", "user@example.com", "[FORECAST_INPUT]", "input.xlsx",
-        source.read_bytes(), "123",
+        b"1",
+        "user@example.com",
+        "[FORECAST_INPUT]",
+        "input.xlsx",
+        source.read_bytes(),
+        "123",
     )
     monkeypatch.setattr(agents, "iter_input_workbooks", lambda s: [item])
 

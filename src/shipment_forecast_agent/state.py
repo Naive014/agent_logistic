@@ -2,10 +2,10 @@
 
 import json
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Callable
 
 
 class UncertainSubmission(RuntimeError):
