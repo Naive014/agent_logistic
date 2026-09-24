@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 LIST_RESPONSE = re.compile(
     rb'^\((?P<flags>[^)]*)\)\s+(?:NIL|"(?:\\.|[^"])*")\s+(?P<mailbox>.+)$'
 )
+SUBJECT_FORWARD_PREFIX = re.compile(
+    r"^\s*(?:(?:re|fw|fwd|пер|отв)\s*:\s*)+", re.IGNORECASE
+)
+
+
+def _subject_matches_prefix(subject: str, prefix: str) -> bool:
+    """Accept the tag at the start, allowing standard reply/forward prefixes."""
+    return SUBJECT_FORWARD_PREFIX.sub("", subject).startswith(prefix)
 
 
 def _configured_mailbox(value: str) -> bytes:
@@ -124,6 +132,8 @@ class ImapInputEnvelope:
     uidvalidity: str = ""
     original_filename: str = ""
     received_at: str = ""
+    message_id: str = ""
+    references: str = ""
 
 
 def check_connections(settings: Settings) -> dict[str, str]:
@@ -312,7 +322,9 @@ def _iter_messages(settings: Settings, prefix: str | None, *, unseen_only: bool 
                 message["X-Agent-Received-At"] = datetime.fromtimestamp(
                     time.mktime(internal), UTC
                 ).isoformat()
-            if prefix is None or str(message.get("Subject", "")).startswith(prefix):
+            if prefix is None or _subject_matches_prefix(
+                str(message.get("Subject", "")), prefix
+            ):
                 yield uid, uidvalidity, message
 
 
@@ -340,9 +352,7 @@ def send_forecast_request(settings: Settings, request: ForecastRequest) -> None:
 
 def iter_input_workbooks(settings: Settings) -> Iterable[ImapInputEnvelope]:
     """Yield input attachments without acknowledging their source message."""
-    for uid, validity, message in _iter_messages(
-        settings, settings.INPUT_SUBJECT_PREFIX
-    ):
+    for uid, validity, message in _iter_messages(settings, None):
         sender = parseaddr(str(message.get("From", "")))[1].strip().lower()
         if not sender or (
             settings.TRUSTED_REQUESTERS and sender not in settings.TRUSTED_REQUESTERS
@@ -366,6 +376,8 @@ def iter_input_workbooks(settings: Settings) -> Iterable[ImapInputEnvelope]:
                 validity,
                 filename,
                 str(message.get("X-Agent-Received-At", "")),
+                str(message.get("Message-ID", "")).strip(),
+                str(message.get("References", "")).strip(),
             )
 
 
@@ -410,11 +422,22 @@ def send_result_workbook(
     recipient: str,
     request_id: str,
     workbook_path: str | Path,
+    *,
+    original_subject: str = "",
+    original_message_id: str = "",
+    original_references: str = "",
+    attachment_filename: str = "",
 ) -> str:
     message = EmailMessage()
     message["From"] = settings.MAILBOX_NAME
     message["To"] = recipient
-    message["Subject"] = f"[FORECAST_RESULT] {request_id}"
+    message["Subject"] = f"RE: {original_subject}" if original_subject else "RE:"
+    if original_message_id:
+        message["In-Reply-To"] = original_message_id
+        references = " ".join(
+            value for value in (original_references, original_message_id) if value
+        )
+        message["References"] = references
     message["Date"] = format_datetime(datetime.now(UTC))
     message.set_content("Результат прогноза находится во вложении.")
     path = Path(workbook_path)
@@ -422,6 +445,6 @@ def send_result_workbook(
         path.read_bytes(),
         maintype="application",
         subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=path.name,
+        filename=attachment_filename or path.name,
     )
     return _send_now(settings, message)

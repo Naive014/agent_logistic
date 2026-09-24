@@ -21,6 +21,9 @@ FIELDS = [
     "mail_uid",
     "source_path",
     "sender",
+    "original_subject",
+    "original_message_id",
+    "original_references",
     "status",
     "output_path",
 ]

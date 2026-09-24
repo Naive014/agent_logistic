@@ -34,7 +34,6 @@ class Settings(BaseSettings):
     N8N_RESPONSE_SENDER: str = ""
     INTERNAL_OUTLOOK_EMAIL: str = ""
     SEND_RESULTS_TO_REQUESTER: bool = False
-    INPUT_SUBJECT_PREFIX: str = "[FORECAST_INPUT]"
     N8N_REQUEST_SUBJECT_PREFIX: str = "[N8N_FORECAST_REQUEST]"
     N8N_RESPONSE_SUBJECT_PREFIX: str = "[N8N_FORECAST_RESULT]"
     TRUSTED_REQUESTERS: Annotated[tuple[str, ...], NoDecode] = ()

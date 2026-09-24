@@ -9,11 +9,11 @@
 | filename | Исходное имя Excel-вложения |
 | outlook_sent_at | Время подтверждения приёма запроса SMTP-сервером |
 | outlook_received_at | Время поступления сопоставленного ответа на сервер, IMAP INTERNALDATE |
-| output_filename | Имя готового файла: out_ + исходное имя |
+| output_filename | Имя готового файла, совпадающее с исходным именем XLSX |
 | user_sent_at | Время подтверждения приёма письма пользователю SMTP-сервером |
 | user_message_id | Message-ID письма пользователю, если доступен |
 
-Далее сохраняются внутренние поля request_id, mailbox, uidvalidity, mail_uid, source_path, sender, status, output_path. Они нужны для корреляции, восстановления и защиты от дублей. UID и request_id содержат один ключ. CSV не содержит паролей.
+Далее сохраняются внутренние поля request_id, mailbox, uidvalidity, mail_uid, source_path, sender, original_subject, original_message_id, original_references, status и output_path. Они нужны для корреляции, ответа в исходной почтовой цепочке, восстановления и защиты от дублей. UID и request_id содержат один ключ. CSV не содержит паролей.
 
 `workdir/result-mail-handled.json` хранит пары `UIDVALIDITY:UID` уже проверенных
 ответных писем. Успешные ответы и письма с неизменяемыми ошибками формата больше

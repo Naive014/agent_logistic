@@ -73,6 +73,8 @@ def test_split_agents_roundtrip_preserves_source(monkeypatch, tmp_path):
         "123",
         "ТЗ.xlsx",
         "2026-09-22T10:00:00+00:00",
+        "<original@example.com>",
+        "<older@example.com>",
     )
     monkeypatch.setattr(agents, "iter_input_workbooks", lambda s: [item])
     sent, marked = [], []
@@ -86,6 +88,8 @@ def test_split_agents_roundtrip_preserves_source(monkeypatch, tmp_path):
     assert record["status"] == "prepared"
     assert record["outlook_sent_at"] == ""
     assert record["filename"] == "ТЗ.xlsx" and record["mail_uid"] == "42"
+    assert record["original_subject"] == "[FORECAST_INPUT]"
+    assert record["original_message_id"] == "<original@example.com>"
 
     response_messages = []
 
@@ -125,19 +129,32 @@ def test_split_agents_roundtrip_preserves_source(monkeypatch, tmp_path):
     monkeypatch.setattr(
         agents,
         "send_result_workbook",
-        lambda s, recipient, uid, path: results.append(
-            (s.MAILBOX_NAME, recipient, uid)
+        lambda s, recipient, uid, path, **kwargs: results.append(
+            (s.MAILBOX_NAME, recipient, uid, path.name, kwargs)
         ),
     )
     (output,) = agents.process_results(settings)
-    assert results == [("planning@example.com", "author@example.com", key)]
+    assert results == [
+        (
+            "planning@example.com",
+            "author@example.com",
+            key,
+            "ТЗ.xlsx",
+            {
+                "original_subject": "[FORECAST_INPUT]",
+                "original_message_id": "<original@example.com>",
+                "original_references": "<older@example.com>",
+                "attachment_filename": "ТЗ.xlsx",
+            },
+        )
+    ]
     book = load_workbook(output)
     assert [book.active.cell(1, column).value for column in (24, 25, 26)] == [
         "Прогноз M1",
         "Прогноз M2",
         "Прогноз M3",
     ]
-    assert output.name == "out_ТЗ.xlsx"
+    assert output.name == "ТЗ.xlsx"
     assert book.active.max_column == 26
     assert [book.active.cell(2, column).value for column in (24, 25, 26)] == [
         10,
@@ -156,7 +173,7 @@ def test_split_agents_roundtrip_preserves_source(monkeypatch, tmp_path):
     assert audit["request_received_at"] == "2026-09-22T10:00:00+00:00"
     assert audit["outlook_received_at"] == "2026-09-22T10:05:00+00:00"
     assert audit["outlook_sent_at"] and audit["user_sent_at"]
-    assert audit["output_filename"] == "out_ТЗ.xlsx"
+    assert audit["output_filename"] == "ТЗ.xlsx"
     assert agents.process_results(settings) == []
     assert len(results) == 1
 

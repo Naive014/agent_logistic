@@ -72,6 +72,9 @@ def process_requests(settings):
                         "filename": item.original_filename or item.filename,
                         "source_path": str(source.resolve()),
                         "sender": item.sender,
+                        "original_subject": item.subject,
+                        "original_message_id": item.message_id,
+                        "original_references": item.references,
                         "status": "prepared",
                         "request_received_at": (record or {}).get("request_received_at")
                         or item.received_at,
@@ -263,7 +266,10 @@ def process_results(settings):
                 safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", original_name).rstrip(
                     " ."
                 )
-                output = directory / ("out_" + (safe_name or "request.xlsx"))
+                result_name = safe_name or "request.xlsx"
+                output = directory / result_name
+                if output.resolve() == (directory / "source.xlsx").resolve():
+                    output = directory / "result.xlsx"
                 submission = directory / "result-submission.json"
                 if not submission.exists():
                     forecasts = forecast_rows(payload)
@@ -273,18 +279,39 @@ def process_results(settings):
                     registry.put(
                         {
                             "request_id": key,
-                            "output_filename": output.name,
+                            "output_filename": result_name,
                             "output_path": str(output.resolve()),
                         }
                     )
                     write_json(directory / "response.json", {"payload": payload})
+                    original_subject = record.get("original_subject", "")
+                    original_message_id = record.get("original_message_id", "")
+                    original_references = record.get("original_references", "")
+
+                    def send_result(
+                        result_settings=result_settings,
+                        recipient=recipient,
+                        key=key,
+                        output=output,
+                        original_subject=original_subject,
+                        original_message_id=original_message_id,
+                        original_references=original_references,
+                        result_name=result_name,
+                    ):
+                        return send_result_workbook(
+                            result_settings,
+                            recipient,
+                            key,
+                            output,
+                            original_subject=original_subject,
+                            original_message_id=original_message_id,
+                            original_references=original_references,
+                            attachment_filename=result_name,
+                        )
+
                     submit_once(
                         submission,
-                        lambda recipient=recipient, key=key, output=output: (
-                            send_result_workbook(
-                                result_settings, recipient, key, output
-                            )
-                        ),
+                        send_result,
                     )
                 else:
                     # An uncertain send blocks retries; an accepted one is not repeated.
@@ -294,7 +321,7 @@ def process_results(settings):
                         "request_id": key,
                         "status": "completed",
                         "output_path": str(output.resolve()),
-                        "output_filename": output.name,
+                        "output_filename": result_name,
                         "user_sent_at": json.loads(
                             submission.read_text(encoding="utf-8")
                         ).get("accepted_at", ""),

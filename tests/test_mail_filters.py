@@ -53,11 +53,80 @@ def test_attachment_filename_cannot_escape_directory(monkeypatch):
     assert envelope.uidvalidity == "7"
 
 
+def test_input_workbook_accepts_any_subject_and_keeps_thread_headers(monkeypatch):
+    msg = message("author@example.com", "request.xlsx", b"workbook")
+    msg.replace_header("Subject", "Произвольная тема")
+    msg["Message-ID"] = "<request@example.com>"
+    msg["References"] = "<parent@example.com>"
+    calls = []
+
+    def messages(settings, prefix):
+        calls.append(prefix)
+        return [(b"2", "8", msg)]
+
+    monkeypatch.setattr(mail, "_iter_messages", messages)
+    (envelope,) = mail.iter_input_workbooks(Settings(_env_file=None))
+
+    assert calls == [None]
+    assert envelope.subject == "Произвольная тема"
+    assert envelope.message_id == "<request@example.com>"
+    assert envelope.references == "<parent@example.com>"
+
+
+def test_result_is_a_reply_with_original_attachment_name(monkeypatch, tmp_path):
+    workbook = tmp_path / "generated.xlsx"
+    workbook.write_bytes(b"xlsx")
+    sent = []
+    monkeypatch.setattr(
+        mail, "_send_now", lambda settings, message: sent.append(message)
+    )
+
+    mail.send_result_workbook(
+        Settings(_env_file=None),
+        "author@example.com",
+        "RQ-" + "a" * 32,
+        workbook,
+        original_subject="Запрос прогноза",
+        original_message_id="<request@example.com>",
+        original_references="<parent@example.com>",
+        attachment_filename="Запрос ТЗ.xlsx",
+    )
+
+    message = sent[0]
+    assert message["Subject"] == "RE: Запрос прогноза"
+    assert message["In-Reply-To"] == "<request@example.com>"
+    assert message["References"] == "<parent@example.com> <request@example.com>"
+    assert next(message.iter_attachments()).get_filename() == "Запрос ТЗ.xlsx"
+
+
 def test_plaintext_smtp_is_rejected():
     with pytest.raises(ValueError, match="TLS"):
         mail._open_smtp(
             Settings(_env_file=None, SMTP_USE_SSL=False, SMTP_USE_STARTTLS=False)
         )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "[FORECAST_INPUT]",
+        "FW: [FORECAST_INPUT]",
+        "Fwd: [FORECAST_INPUT] request",
+        "RE: FW: [FORECAST_INPUT]",
+        "ПЕР: [FORECAST_INPUT]",
+        "ОТВ: [FORECAST_INPUT]",
+    ],
+)
+def test_input_tag_accepts_reply_and_forward_prefixes(subject):
+    assert mail._subject_matches_prefix(subject, "[FORECAST_INPUT]")
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ["Other [FORECAST_INPUT]", "FW: Other [FORECAST_INPUT]", "[OTHER]"],
+)
+def test_input_tag_is_not_accepted_in_arbitrary_subject_text(subject):
+    assert not mail._subject_matches_prefix(subject, "[FORECAST_INPUT]")
 
 
 def test_imap_failure_to_mark_is_visible(monkeypatch):
